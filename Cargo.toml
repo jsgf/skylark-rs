@@ -1,0 +1,12 @@
+[package]
+name = "skylark"
+version = "0.1.0"
+authors = ["Jeremy Fitzhardinge <jsgf@fb.com>"]
+build = "build.rs"
+
+[dependencies]
+lalrpop-util = { git = "https://github.com/lalrpop/lalrpop.git", branch="master" }
+regex = "0.2.1"
+
+[build-dependencies]
+lalrpop = { git = "https://github.com/lalrpop/lalrpop.git", branch="master" }

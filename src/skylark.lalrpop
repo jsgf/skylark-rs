@@ -1,0 +1,380 @@
+/// Language reference
+///
+/// - lowercase and 'quoted' items are lexical tokens.
+/// - Capitalized names denote grammar productions.
+/// - (...) implies grouping.
+/// - x | y means either x or y.
+/// - [x] means x is optional.
+/// - {x} means x is repeated zero or more times.
+/// - The end of each declaration is marked with a period.
+use ast::{Expr, Suite, Statement, SimpleStmt, Tuple, Test};
+
+grammar;
+
+match {
+    r"[1-9][0-9]*" => DECIMAL,
+    r"0[Oo][0-7]+" => OCTAL,
+    r"0[Xx][0-9a-fA-F]+" => HEX,
+} else {
+    r"0+" => ZERO, // allow multiple '0'?
+} else {
+    // Keywords
+    "and",
+    "break",
+    "continue",
+    "def",
+    "elif",
+    "else",
+    "for",
+    "if",
+    "in",
+    "load",
+    "not",
+    "or",
+    "pass",
+    "return",
+    // Reserved
+    "as",
+    "is",
+    "assert",
+    "lambda",
+    "class",
+    "nonlocal",
+    "del",
+    "raise",
+    "except",
+    "try",
+    "finally",
+    "while",
+    "from",
+    "with",
+    "global",
+    "yield",
+    "import",
+} else {
+    // Identifiers: an identifier is a sequence of Unicode letters, decimal digits,
+    // and underscores (_), not starting with a digit.
+    r"[_a-zA-Z][_a-zA-Z0-9]*" => IDENTIFIER,
+    // Other punctuation
+    _
+}
+
+/// Integer literal tokens are defined by the following grammar:
+/// ```
+/// int         = decimal_lit | octal_lit | hex_lit | 0 .
+/// decimal_lit = ('1' … '9') {decimal_digit} .
+/// octal_lit   = '0' ('o' | 'O') octal_digit {octal_digit} .
+/// hex_lit     = '0' ('x' | 'X') hex_digit {hex_digit} .
+/// 
+/// decimal_digit = '0' … '9' .
+/// octal_digit   = '0' … '7' .
+/// hex_digit     = '0' … '9' | 'A' … 'F' | 'a' … 'f' .
+/// ```
+Decimal: i32 = DECIMAL => i32::from_str_radix(<>, 10).unwrap();
+Octal: i32 = OCTAL => i32::from_str_radix(&<>[2..], 8).unwrap();
+Hex: i32 = HEX => i32::from_str_radix(&<>[2..], 16).unwrap();
+Zero: i32 = ZERO => 0_i32;
+
+pub Int: i32 = {
+    Decimal,
+    Octal,
+    Hex,
+    Zero,
+}
+
+/// Identifiers: an identifier is a sequence of Unicode letters, decimal digits,
+/// and underscores (_), not starting with a digit.
+pub Identifier: () = IDENTIFIER => String::from(<>);
+
+#[inline]
+EOL: () = {
+    ";",
+    // ";"? newline
+};
+
+/// Strings can represent arbitrary binary data, including zero bytes, but most
+/// strings contain text, encoded by convention using UTF-8.
+///
+/// "hello"      'hello'            # string`
+/// '''hello'''  """hello"""        # triple-quoted string`
+/// r'hello'     r"hello"           # raw string literal`
+StringLit: Vec<u8> = {
+    <r"'[^']*'"> => Vec::from(<>),
+    <r#""[^"]*""#> => Vec::from(<>),
+    <r#"'''.*'''"#> => Vec::from(<>),
+    <r#"""".*""""#> => Vec::from(<>),
+    // XXX rest - probably need to hardcode in lexer
+};
+
+/// File = {Statement | newline} eof .
+//pub File = {Statement, newline}* eof;
+
+/// Statement = DefStmt | IfStmt | ForStmt | SimpleStmt .
+pub Statement: Statement = {
+    DefStmt ";" => Statement,
+    IfStmt ";" => Statement,
+    ForStmt ";" => Statement,
+    SimpleStmt => Statement,
+};
+
+/// DefStmt = 'def' identifier '(' [Parameters [',']] ')' ':' Suite .
+/// # NOTE: trailing comma is not permitted if the last argument is `'*' identifier` or `'**' identifier`.
+DefStmt = "def" Identifier "(" (Parameters ","?)? ")" ":" Suite;
+
+/// Parameters = Parameter {',' Parameter}.
+Parameters = Parameter ("," Parameter)*;
+
+/// Parameter = identifier | identifier '=' Test | '*' identifier | '**' identifier .
+Parameter: () = {
+    Identifier => (),
+    Identifier "=" Test => (),
+    "*" Identifier => (),
+    "**" Identifier => (),
+};
+
+/// 
+/// IfStmt = 'if' Test ':' Suite {'elif' Test ':' Suite} ['else' ':' Suite] .
+IfStmt = "if" Test ":" Suite ("elif" Test ":" Suite)* ("else" ":" Suite)?;
+
+/// ForStmt = 'for' LoopVariables 'in' Expression ':' Suite .
+ForStmt = "for" LoopVariables "in" Expression ":" Suite;
+
+/// 
+/// Suite = [newline indent {Statement} outdent] | SimpleStmt .
+Suite: Suite = {
+    (indent <Statement*> outdent)? => Suite::Statements(<>.unwrap_or(Vec::new())),
+    <SimpleStmt> => Suite::SimpleStmt(<>),
+};
+
+// XXX need custom lexer
+indent = "@>";
+outdent = "<@";
+
+/// SimpleStmt = SmallStmt {';' SmallStmt} [';'] '\n' .
+/// # NOTE: '\n' optional at EOF
+SimpleStmt: SimpleStmt =
+    <SmallStmt> (";" <SmallStmt>)* EOL => SimpleStmt
+    ;
+
+/// SmallStmt = ReturnStmt
+///           | BreakStmt | ContinueStmt | PassStmt
+///           | AssignStmt
+///           | ExprStmt
+///           | LoadStmt
+///           .
+SmallStmt: () = {
+    ReturnStmt => (),
+    BreakStmt => (), ContinueStmt => (), PassStmt => (),
+    AssignStmt => (),
+    ExprStmt => (),
+    LoadStmt => (),
+};
+
+/// ReturnStmt   = 'return' [Expression] .
+ReturnStmt = "return" Expression?;
+
+/// BreakStmt    = 'break' .
+BreakStmt = "break";
+
+/// ContinueStmt = 'continue' .
+ContinueStmt = "continue";
+
+/// PassStmt     = 'pass' .
+PassStmt = "pass";
+
+/// AssignStmt   = Expression ('=' | '+=' | '-=' | '*=' | '/=' | '//=' | '%=') Expression .
+AssignStmt = Expression AssignOp Expression;
+AssignOp = { "=", "+=", "-=", "*=", "/=", "//=", "%=" };
+
+/// ExprStmt     = Expression .
+ExprStmt = Expression;
+
+/// 
+/// LoadStmt = 'load' '(' string {',' [identifier '='] string} [','] ')' .
+LoadStmt = "load" "(" StringLit ("," (Identifier "=")? StringLit) ","? ")";
+
+/// Test = IfExpr
+///      | PrimaryExpr
+///      | UnaryExpr
+///      | BinaryExpr
+///      .
+Test: Test = {
+    <IfExpr> => <>,
+    Expression => Test::Nil,
+};
+
+/// IfExpr = Test 'if' Test 'else' Test .
+IfExpr: Test =
+    "if" <cond:Test> "else" <alt:Test> => Test::IfExpr{cond:Box::new(cond), alt:Box::new(cond)}
+    ;
+
+/// PrimaryExpr = Operand
+///             | PrimaryExpr DotSuffix
+///             | PrimaryExpr CallSuffix
+///             | PrimaryExpr SliceSuffix
+///             .
+PrimaryExpr: Expr = {
+    <Operand> => Expr::Operand(<>),
+    <PrimaryExpr> <DotSuffix> => Expr::Dot(<>),
+    <PrimaryExpr> <CallSuffix> => Expr::Call(<>),
+    <PrimaryExpr> <SliceSuffix> => Expr::Slice(<>),
+};
+
+/// Operand = identifier
+///         | int | string
+///         | ListExpr | ListComp
+///         | DictExpr | DictComp
+///         | '(' [Expression [',']] ')'
+///         .
+/// Expression = Test {',' Test} .
+/// # NOTE: trailing comma permitted only when within [...] or (...).
+pub Operand: Expr = {
+    <Identifier> => Expr::Identifier(<>),
+    <Int> => Expr::Int(<>),
+    <StringLit> => Expr::String(<>),
+    <ListExpr> => Expr::ListExpr,
+    <ListComp> => Expr::ListComp,
+    <DictExpr> => Expr::DictExpr,
+    <DictComp> => Expr::DictComp,
+    <ParenTuple> => Expr::Tuple(<>),
+    "(" <Expression> ")" => <>, // regular parens
+};
+
+ParenTuple: Tuple = {
+    "(" ")" => Tuple(Vec::new()),
+    "(" <SingleTuple> ")",
+    "(" <MultiTuple> "," ")",
+};
+
+/// Tuple without parens
+/// In some contexts, such as a `return` or assignment statement or the operand
+/// of a `for` statement, a tuple may be expressed without parentheses.
+NakedTuple: Tuple = {
+    <SingleTuple>,
+    <MultiTuple>,
+};
+
+SingleTuple: Tuple = 
+    <Expression> "," => Tuple(vec![<>]);
+#[inline]
+MultiTuple: Tuple =
+    <Expression> ("," <Expression>)+ => Tuple(vec![<>]);
+
+/// DotSuffix   = '.' identifier .
+DotSuffix: String = "." <Identifier>;
+
+/// SliceSuffix = '[' [Expression] [':' Test [':' Test]] ']' .
+SliceSuffix: () = "[" Expression? (":" Test (":" Test)?)? "]";
+
+/// CallSuffix  = '(' [Arguments [',']] ')' .
+/// # NOTE: trailing comma is not permitted if the last argument is `'*' Test` or `'**' Test`.
+CallSuffix: () = "(" ( Arguments ","? )? ")";
+
+/// Arguments = Argument {',' Argument} .
+#[inline]
+Arguments = Argument ("," Argument)*;
+
+/// Argument  = Test | identifier '=' Test | '*' Test | '**' Test .
+Argument: () = {
+    Test => (),
+    Identifier "=" Test => (),
+    "*" Test => (),
+    "**" Test => (),
+};
+
+/// ListExpr = '[' [Expression [',']] ']' .
+ListExpr: Expr = {
+    "[" "]" => Expr::ListExpr(Vec::new()),
+    "[" <Expression> ("," <Expression>)* ","? "]" => Expr::ListExpr(<>),
+};
+
+/// ListComp = '[' Test {CompClause} ']'.
+ListComp = "[" Test CompClause+ "]";
+
+/// DictExpr = '{' [Entries [',']] '}' .
+DictExpr = "{" (Entries ","?)? "}";
+
+/// DictComp = '{' Entry {CompClause} '}' .
+DictComp = "{" Entry CompClause+ "}";
+
+/// Entries  = Entry {',' Entry} .
+#[inline]
+Entries = Entry ("," Entry)*;
+
+/// Entry    = Test ':' Test .
+Entry = Test ":" Test;
+
+/// CompClause = 'for' LoopVariables 'in' Test | 'if' Test .
+CompClause: () = {
+    "for" LoopVariables "in" Test => (),
+    "if" Test => (),
+};
+
+/// BinaryExpr = Test {Binop Test} .
+/// Binop = 'or'
+///       | 'and'
+///       | '==' | '!=' | '<' | '>' | '<=' | '>=' | 'in' | 'not' 'in'
+///       | '|'
+///       | '&'
+///       | '-' | '+'
+///       | '*' | '%' | '/' | '//'
+///       .
+Expression: Expr = {
+    <Expression> "or" <AndOp> => Expr::Or(<>),
+    <AndOp> => <>,
+};
+
+AndOp: Expr = {
+    <AndOp> "and" <CompareOp> => Expr::And(<>),
+    <CompareOp> => <>,
+};
+
+CompareOp: Expr = {
+    <CompareOp> "==" <BinOrOp> => Expr::Eq(<>),
+    <CompareOp> "!=" <BinOrOp> => Expr::Ne(<>),
+    <CompareOp> "<" <BinOrOp> => Expr::Lt(<>),
+    <CompareOp> ">" <BinOrOp> => Expr::Ge(<>),
+    <CompareOp> "<=" <BinOrOp> => Expr::Le(<>),
+    <CompareOp> ">=" <BinOrOp> => Expr::Ge(<>),
+    <CompareOp> "in" <BinOrOp> => Expr::In(<>),
+    <CompareOp> "not" "in" <BinOrOp> => Expr::NotIn(<>),
+    <BinOrOp> => <>,
+};
+
+BinOrOp: Expr = {
+    <BinOrOp> "|" <BinAndOp> => Expr::BinOr(<>),
+    <BinAndOp> => <>,
+};
+
+BinAndOp: Expr = {
+    <BinAndOp> "&" <AddSubOp> => Expr::BinAnd(<>),
+    <AddSubOp> => <>
+};
+
+AddSubOp: Expr = {
+    <AddSubOp> "+" <FactorOp> => Expr::Add(<>),
+    <AddSubOp> "-" <FactorOp> => Expr::Ne(<>),
+    <FactorOp> => <>,
+};
+
+FactorOp: Expr = {
+    <FactorOp> "*" <UniaryOp> => Expr::Mul(<>),
+    <FactorOp> "/" <UniaryOp> => Expr::Div(<>),
+    <FactorOp> "//" <UniaryOp> => Expr::DivFloor(<>),
+    <FactorOp> "%" <UniaryOp> => Expr::Mod(<>),
+    <UniaryOp> => <>
+}
+
+/// UnaryExpr = '-' Test
+///           | 'not' Test
+///           .
+UniaryOp: Expr = {
+    "-" <UniaryOp> => Expr::Neg(<>),
+    "not" <UniaryOp> => Expr::Not(<>),
+    <PrimaryExpr> => <>,
+};
+
+/// LoopVariables = PrimaryExpr {',' PrimaryExpr} .
+LoopVariables = PrimaryExpr ("," PrimaryExpr)*;
+
+
